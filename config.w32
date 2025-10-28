@@ -1,0 +1,12 @@
+ARG_WITH("mysqlnd_parse", "with Mariadb parsec authentication support for mysqlnd", "no");
+
+if (PHP_MYSQLND_PARSEC != "no") {
+    if (CHECK_LIB("libsodium.lib", "sodium", PHP_SODIUM) && CHECK_HEADER_ADD_INCLUDE("sodium.h", "CFLAGS_SODIUM")) {
+
+        EXTENSION("mysqlnd_parsec", "php_mysqlnd_parsec.c", true)
+        ADD_EXTENSION_DEP('mysqlnd_parsec', 'mysqlnd');
+        ADD_EXTENSION_DEP('mysqlnd_parsec', 'sodium');
+    } else {
+        WARNING("libsodium not found");
+    }
+}

@@ -1,20 +1,17 @@
 /*
- +----------------------------------------------------------------------+
- | PHP Version 8                                                        |
- +----------------------------------------------------------------------+
- | Copyright (c) 1997-2025 The PHP Group                                |
- +----------------------------------------------------------------------+
- | This source file is subject to version 3.01 of the PHP license,      |
- | that is bundled with this package in the file LICENSE, and is        |
- | available through the world-wide-web at the following url:           |
- | https://www.php.net/license/3_01.txt                                 |
- | If you did not receive a copy of the PHP license and are unable to   |
- | obtain it through the world-wide-web, please send a note to          |
- | license@php.net so we can mail you a copy immediately.               |
- +----------------------------------------------------------------------+
- | Author: Georg Richter <georg@mariadb.com>                            |
- +----------------------------------------------------------------------+
+   +----------------------------------------------------------------------+
+   | Copyright © The PHP Group and Contributors.                          |
+   +----------------------------------------------------------------------+
+   | This source file is subject to the Modified BSD License that is      |
+   | bundled with this package in the file LICENSE, and is available      |
+   | through the World Wide Web at <https://www.php.net/license/>.        |
+   |                                                                      |
+   | SPDX-License-Identifier: BSD-3-Clause                                |
+   +----------------------------------------------------------------------+
+   | Authors: Georg Richter <georg@mariadb.com>                           |
+   +----------------------------------------------------------------------+
 */
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -68,6 +65,33 @@ static int compute_derived_key(const char* password, size_t pass_len,
                             EVP_sha512(), PBKDF2_HASH_LENGTH, derived_key);
 }
 
+int ed25519_sign(const zend_uchar *response, size_t response_len,
+                 const zend_uchar *private_key, zend_uchar *signature,
+                 zend_uchar *public_key)
+{
+
+  int res= 1;
+  size_t sig_len= ED25519_SIG_LENGTH, pklen= ED25519_KEY_LENGTH;
+  EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL,
+                                                private_key,
+                                                ED25519_KEY_LENGTH);
+  EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+  if (!ctx || !pkey)
+    goto cleanup;
+
+  if (EVP_DigestSignInit(ctx, NULL, NULL, NULL, pkey) != 1 ||
+      EVP_DigestSign(ctx, signature, &sig_len, response, response_len) != 1)
+    goto cleanup;
+
+  EVP_PKEY_get_raw_public_key(pkey, public_key, &pklen);
+
+  res= 0;
+cleanup:
+  EVP_MD_CTX_free(ctx);
+  EVP_PKEY_free(pkey);
+  return res;
+}
+
 
 static zend_uchar* mariadb_parsec_auth(struct st_mysqlnd_authentication_plugin* self, size_t* auth_data_len,
 	MYSQLND_CONN_DATA* conn, const char* const user, const char* const passwd, const size_t passwd_len,
@@ -89,14 +113,16 @@ static zend_uchar* mariadb_parsec_auth(struct st_mysqlnd_authentication_plugin* 
                 "signed_msg should be packed.");
 
 	zend_uchar *ret;
-	zend_uchar buffer[100];
+	zend_uchar buffer[128];
 	size_t pkt_len;
 	struct Passwd_in_memory params;
 	MYSQLND_PFC * pfc = conn->protocol_frame_codec;
 	zend_uchar priv_key[ED25519_KEY_LENGTH];
     zend_uchar *packet_no= &pfc->data->packet_no;
+    zend_uchar offset = 0;
 
     *auth_data_len= 0;
+
 	if (auth_plugin_data_len != CHALLENGE_SCRAMBLE_LENGTH)
     {
 	    php_error_docref(NULL, E_WARNING, "received scramble with invalid length");
@@ -106,52 +132,74 @@ static zend_uchar* mariadb_parsec_auth(struct st_mysqlnd_authentication_plugin* 
     if (!(pfc->data->m.send(pfc, conn->vio, buffer, 0, conn->stats, conn->error_info)))
       return NULL;
 
-    if (FAIL == pfc->data->m.receive(pfc, conn->vio, buffer, NET_HEADER_SIZE + CHALLENGE_SALT_LENGTH + 2, conn->stats, conn->error_info))
+
+    if (FAIL == pfc->data->m.receive(pfc, conn->vio, buffer, NET_HEADER_SIZE, conn->stats, conn->error_info))
+      return NULL;
+    pkt_len= uint3korr(buffer);
+
+    if (pkt_len > sizeof(buffer))
+    {
+	    php_error_docref(NULL, E_WARNING, "received extended salt with invalid length");
+		return NULL;
+    }
+
+    if (FAIL == pfc->data->m.receive(pfc, conn->vio, buffer, pkt_len, conn->stats, conn->error_info))
       return NULL;
 
-    pkt_len= uint3korr(buffer);
+    /*
+    the server sends \1\255 or \1\254 instead of just \255 or \254 -
+    for us to not confuse it with an error or "change plugin" packets.
+    We remove this escaping \1 here. */
+
+    if (pkt_len && buffer[offset] == 1)
+    {
+      pkt_len--;
+      offset++;
+    }
     if (pkt_len != CHALLENGE_SALT_LENGTH + 2)
     {
-	    php_error_docref(NULL, E_WARNING, "received scramble with invalid length");
+	    php_error_docref(NULL, E_WARNING, "received extended salt with invalid length");
 		return NULL;
     }
 
 	memcpy(signed_msg.server_scramble, auth_plugin_data, auth_plugin_data_len);
-    memcpy(&params, buffer + NET_HEADER_SIZE, pkt_len);
+    memcpy(&params, buffer + offset, pkt_len);
 
 	if (params.algorithm != 'P')
+    {
+	    php_error_docref(NULL, E_WARNING, "Invalid/unknown algorithm for extended salt");
 		return NULL;
+    }
 	if (params.iterations > 3)
-    	return NULL;
+    {
+	    php_error_docref(NULL, E_WARNING, "Invalid iteration factor for extended salt");
+		return NULL;
+    }
 
 	RAND_bytes(signed_msg.response.client_scramble, CHALLENGE_SCRAMBLE_LENGTH);
 
 	if (compute_derived_key(passwd, passwd_len, &params, priv_key))
+    {
+	    php_error_docref(NULL, E_WARNING, "Unable to create derived key");
 		return NULL;
+    }
 
-	if ((ret= malloc(sizeof signed_msg.response)))
+	if ((ret= calloc(sizeof signed_msg.response, 1)))
 	{
-		unsigned long long sig_len;
-
-		/* Construct 64-byte secret key from 32-byte priv_key seed */
-		zend_uchar sk[crypto_sign_SECRETKEYBYTES];
-		zend_uchar pk[crypto_sign_PUBLICKEYBYTES];
-
-		crypto_sign_seed_keypair(pk, sk, priv_key);
-
-		/* Sign using crypto_sign_detached */
-		if (crypto_sign_detached(signed_msg.response.signature, &sig_len,
-                         signed_msg.start, CHALLENGE_SCRAMBLE_LENGTH * 2,
-                         sk) != 0) {
-			free(ret);
-			return NULL;
-		}
-        *packet_no= *packet_no + 1;
+        if (ed25519_sign(signed_msg.start, CHALLENGE_SCRAMBLE_LENGTH * 2,
+                          priv_key, signed_msg.response.signature, params.pub_key))
+        {
+          free(ret);
+          return NULL;
+        }
 		memcpy(ret, signed_msg.response.start, sizeof signed_msg.response);
 	    *auth_data_len = sizeof signed_msg.response;
+
+        /* Increment the packet number, to avoid packet order errors */
+        (*packet_no)++;
+
         return ret;
 	}
-
 	return NULL;
 }
 
@@ -162,7 +210,7 @@ static struct st_mysqlnd_authentication_plugin mariadb_parsec_auth_plugin =
 		"auth_plugin_parsec",
 		PHP_VERSION_ID,
 		PHP_MARIADB_AUTH_PLUGIN_VERSION,
-		"PHP License 3.01",
+		"3-clause BSD License",
 		"Georg Richter <georg@mariadb.com>",
 		{ NULL, NULL },
 		{ NULL },

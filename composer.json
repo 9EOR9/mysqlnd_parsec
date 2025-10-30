@@ -1,0 +1,30 @@
+{
+  "name": "mariadb/mysqlnd_parsec",
+  "description": "MariaDB parsec authentication plugin for mysqlnd",
+  "type": "php-ext",
+  "license": "BSD-3-Clause",
+  "authors": [
+    {
+      "name": "Georg Richter",
+      "email": "georg@mariadb.com",
+      "role": "Maintainer"
+    }
+  ],
+  "require": {
+    "php": ">=8.1"
+  },
+  "php-ext": {
+      "extension-name": "mysqlnd_parsec",
+      "priority": 30,
+      "support-zts": true,
+      "support-nts": true,
+      "configure-options": [
+        {
+          "name": "with-mysqlnd-parsec",
+          "description": "Enable MariaDB parsec authentication support for mysqlnd",
+          "needs-value": false
+        }
+      ]
+  }
+}
+

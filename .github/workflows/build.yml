@@ -1,6 +1,6 @@
 name: Windows Extension Build (php-windows-builder)
 
-# Trigger the workflow on every push to 'main' and when a new release is published
+# Trigger the workflow on every push to 'main', on pull requests, and when a release is published
 on:
   push:
     branches:
@@ -9,24 +9,28 @@ on:
     branches:
       - main
   release:
-    types: [published] # Triggers the release job
+    types: [published]
 
 jobs:
   build:
     # Use the stable windows-2022 runner image, which includes VS17 (Visual Studio 2022).
     runs-on: windows-2022
+    permissions:
+      contents: read
     
-    # A matrix to build the extension against different PHP versions, architectures, and thread safeties
+    # Define outputs to pass the version string to the release job
+    outputs:
+      extension_version: ${{ steps.get_version.outputs.version }}
+
     strategy:
       fail-fast: false
       matrix:
+        # The required PHP versions
         php-version: ['8.2', '8.3', '8.4']
+        # 64-bit and 32-bit architecture
         arch: ['x64', 'x86']
+        # Thread Safe (ts) and Non-Thread Safe (nts) Builds
         ts: ['ts', 'nts']
-
-    # Define outputs to pass data (like the version) to the next job
-    outputs:
-      extension_version: ${{ steps.get_version.outputs.version }}
 
     steps:
       - name: Checkout Extension Source
@@ -34,19 +38,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 1. Get Extension Version from C-Header
-      # This version is needed for naming the release artifacts.
+      # Step 1: Get the exact version string from the C header file
       - name: Get Extension Version
         id: get_version
-        shell: pwsh
+        shell: powershell
+        # Searches php_mysqlnd_parsec.h for the version definition and sets it as an output
         run: |
-          $Version = (Get-Content -Path php_mysqlnd_parsec.h | 
-                      Select-String -Pattern '#define PHP_MARIADB_AUTH_PLUGIN_VERSION\s+"([^"]+)"').Matches[0].Groups[1].Value
-          echo "version=$Version" >> $env:GITHUB_OUTPUT
-          echo "version=$Version" 
-        # Note: Assumes version is defined as #define PHP_MARIADB_AUTH_PLUGIN_VERSION "X.Y.Z"
+          # Use the correct define name: PHP_MARIADB_AUTH_PLUGIN_VERSION
+          $version = Get-Content "php_mysqlnd_parsec.h" | Select-String -Pattern '#define PHP_MARIADB_AUTH_PLUGIN_VERSION'
+          $version = $version -split '"'
+          Write-Host "##[set-output name=version]$($version[1])"
+        continue-on-error: false
 
-      # 2. Build the extension using the php-windows-builder
+      # Step 2: Build the extension using the php-windows-builder
       - name: Build Extension (PHP ${{ matrix.php-version }} - ${{ matrix.ts }} - ${{ matrix.arch }})
         uses: php/php-windows-builder/extension@v1
         with:
@@ -54,64 +58,66 @@ jobs:
           arch: ${{ matrix.arch }}
           ts: ${{ matrix.ts }}
           extension-url: https://github.com/9EOR9/mysqlnd_parsec
-          # Explicitly disable invalid Linux flags; rely on libs for dependency fetching.
           args: --with-mysqlnd_parsec
-          # The libs input triggers download of required static libraries (fixes LNK1181)
-          libs: "openssl-3, libsodium-1"
-
-      # 3. Upload the created DLLs as workflow artifacts
+          libs: 
+            - OpenSSL-3
+            - libsodium-1
+            
+      # Step 3: Upload the created DLLs as workflow artifacts
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          # Unique name includes the extracted version number for reliable tracking
           name: mysqlnd_parsec-${{ steps.get_version.outputs.version }}-${{ matrix.php-version }}-${{ matrix.ts }}-${{ matrix.arch }}
-          # Path uses glob pattern relative to the workspace root
           path: build/**/php_mysqlnd_parsec.dll
           if-no-files-found: error
-
+          
   release:
-    # Only runs if the workflow was triggered by a published release
-    if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-latest
+    # Wait for the build job to complete
     needs: build
+    # Only run this job when the workflow was triggered by a published release
+    if: ${{ github.event_name == 'release' }}
     
+    permissions:
+      contents: write
+
     steps:
       - name: Download all built artifacts
         uses: actions/download-artifact@v4
         with:
-          # Downloads all 12 uniquely named artifacts into the ./artifacts directory
           pattern: mysqlnd_parsec-*
-          path: ./artifacts
-
-      # Consolidate and rename the DLLs into a single directory for mass upload
+          path: artifacts
+          
+      # Step 4: Consolidate and Rename DLLs
       - name: Consolidate and Rename DLLs
         shell: bash
         run: |
-          # Create a dedicated directory for the final release assets
-          mkdir -p release_assets
-          
-          # Find all downloaded DLLs (now located deep inside subdirectories)
-          # The path includes the version and matrix info in the directory name:
-          # ./artifacts/mysqlnd_parsec-1.0.0-8.4-nts-x64/build/.../php_mysqlnd_parsec.dll
-          find ./artifacts -type f -name 'php_mysqlnd_parsec.dll' | while read FILE_PATH; do
-              
-              # Extract the version/matrix info (e.g., 1.0.0-8.4-nts-x64) from the directory name
-              ARTIFACT_DIR=$(basename $(dirname $(dirname "$FILE_PATH")))
-              
-              # Construct the new final name (e.g., php_mysqlnd_parsec-1.0.0-8.4-nts-x64.dll)
-              NEW_NAME="php_mysqlnd_parsec-$ARTIFACT_DIR.dll"
-              
-              # Move and rename the file into the dedicated directory
-              mv "$FILE_PATH" "release_assets/$NEW_NAME"
-              
-              echo "Renamed and moved $ARTIFACT_DIR to release_assets/$NEW_NAME"
+          mkdir release_assets
+          # Loop through every downloaded artifact directory (e.g., artifacts/mysqlnd_parsec-1.0.0-8.4-nts-x64)
+          for artifact_dir in artifacts/*; do
+            # Extract the full version/matrix info from the directory name
+            MATRIX_INFO=$(basename "$artifact_dir")
+            
+            # Find the single DLL file inside the artifact directory (which might be in a subdir)
+            DLL_FILE=$(find "$artifact_dir" -name "*.dll" | head -n 1)
+
+            if [ -n "$DLL_FILE" ]; then
+                # Construct the final desired filename: php_mysqlnd_parsec-VERSION-PHP_MATRIX.dll
+                NEW_NAME="php_mysqlnd_parsec-$MATRIX_INFO.dll"
+                
+                echo "Renaming $DLL_FILE to $NEW_NAME"
+                cp "$DLL_FILE" "release_assets/$NEW_NAME"
+            else
+                echo "Warning: No DLL found in $artifact_dir. Skipping."
+            fi
           done
 
+      # Step 5: Upload all consolidated and correctly named DLLs to the GitHub Release
       - name: Upload Release Assets
-        # Use softprops/action-gh-release as it reliably handles uploading multiple files via glob patterns.
         uses: softprops/action-gh-release@v1
         with:
-          # The token is automatically available for release events
-          token: ${{ secrets.GITHUB_TOKEN }}
-          # Upload all files from the consolidated directory
           files: release_assets/*
+          tag_name: ${{ github.event.release.tag_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          overwrite: true
+

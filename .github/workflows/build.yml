@@ -62,7 +62,7 @@ jobs:
           extension-url: https://github.com/9EOR9/mysqlnd_parsec
           args: --with-mysqlnd_parsec
           # FIX: Uses explicit comma-separated string format for libraries
-          libs: "OpenSSL-3, libsodium-1"
+          libs: "openssl-3, libsodium-1"
             
       # Step 3: Upload the created DLLs as workflow artifacts
       - name: Upload Build Artifact

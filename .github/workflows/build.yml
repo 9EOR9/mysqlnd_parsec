@@ -1,0 +1,112 @@
+name: Windows Extension Build (php-windows-builder)
+
+# Trigger the workflow on every push to 'main' and when a new release is published
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  release:
+    types: [published] # Triggers the release job
+
+jobs:
+  build:
+    # Use the stable windows-2022 runner image, which includes VS17 (Visual Studio 2022).
+    runs-on: windows-2022
+    
+    # A matrix to build the extension against different PHP versions, architectures, and thread safeties
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['8.2', '8.3', '8.4']
+        arch: ['x64', 'x86']
+        ts: ['ts', 'nts']
+
+    # Define outputs to pass data (like the version) to the next job
+    outputs:
+      extension_version: ${{ steps.get_version.outputs.version }}
+
+    steps:
+      - name: Checkout Extension Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 1. Get Extension Version from C-Header
+      # This version is needed for naming the release artifacts.
+      - name: Get Extension Version
+        id: get_version
+        shell: pwsh
+        run: |
+          $Version = (Get-Content -Path php_mysqlnd_parsec.h | 
+                      Select-String -Pattern '#define PHP_MARIADB_AUTH_PLUGIN_VERSION\s+"([^"]+)"').Matches[0].Groups[1].Value
+          echo "version=$Version" >> $env:GITHUB_OUTPUT
+          echo "version=$Version" 
+        # Note: Assumes version is defined as #define PHP_MARIADB_AUTH_PLUGIN_VERSION "X.Y.Z"
+
+      # 2. Build the extension using the php-windows-builder
+      - name: Build Extension (PHP ${{ matrix.php-version }} - ${{ matrix.ts }} - ${{ matrix.arch }})
+        uses: php/php-windows-builder/extension@v1
+        with:
+          php-version: ${{ matrix.php-version }}
+          arch: ${{ matrix.arch }}
+          ts: ${{ matrix.ts }}
+          extension-url: https://github.com/9EOR9/mysqlnd_parsec
+          # Explicitly disable invalid Linux flags; rely on libs for dependency fetching.
+          args: --with-mysqlnd_parsec
+          # The libs input triggers download of required static libraries (fixes LNK1181)
+          libs: "openssl-3, libsodium-1"
+
+      # 3. Upload the created DLLs as workflow artifacts
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Unique name includes the extracted version number for reliable tracking
+          name: mysqlnd_parsec-${{ steps.get_version.outputs.version }}-${{ matrix.php-version }}-${{ matrix.ts }}-${{ matrix.arch }}
+          # Path uses glob pattern relative to the workspace root
+          path: build/**/php_mysqlnd_parsec.dll
+          if-no-files-found: error
+
+  release:
+    # Only runs if the workflow was triggered by a published release
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    needs: build
+    
+    steps:
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          # Downloads all versioned artifacts into subdirectories
+          pattern: mysqlnd_parsec-*
+          path: ./artifacts
+
+      # Rename the DLLs and consolidate them into the root directory for the release action
+      - name: Rename and Consolidate DLLs
+        shell: bash
+        run: |
+          # Loop through all downloaded artifact directories
+          find ./artifacts -type f -name 'php_mysqlnd_parsec.dll' | while read FILE_PATH; do
+              
+              # Extract the full version/matrix info (e.g., 1.0.0-8.4-nts-x64) from the parent directory name
+              ARTIFACT_DIR=$(basename $(dirname $(dirname "$FILE_PATH")))
+              
+              # Construct the new final name (e.g., php_mysqlnd_parsec-1.0.0-8.4-nts-x64.dll)
+              NEW_NAME="php_mysqlnd_parsec-$ARTIFACT_DIR.dll"
+              
+              # Move and rename the file
+              mv "$FILE_PATH" "$NEW_NAME"
+              
+              echo "Renamed $ARTIFACT_DIR to $NEW_NAME"
+          done
+
+      - name: Upload Release Asset
+        uses: php/php-windows-builder/release@v1
+        with:
+          release: ${{ github.event.release.tag_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # The path is now set to find all renamed files in the root directory
+          path: "*.dll"
+

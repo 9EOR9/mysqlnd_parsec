@@ -1,12 +1,28 @@
-ARG_WITH("mysqlnd_parse", "with Mariadb parsec authentication support for mysqlnd", "no");
+ARG_WITH("mysqlnd_parsec", "with MariaDB parsec authentication support for mysqlnd", "no");
 
 if (PHP_MYSQLND_PARSEC != "no") {
-    if (CHECK_LIB("libsodium.lib", "sodium", PHP_SODIUM) && CHECK_HEADER_ADD_INCLUDE("sodium.h", "CFLAGS_SODIUM")) {
+    var have_sodium = CHECK_LIB("libsodium.lib", "sodium", PHP_SODIUM) &&
+                      CHECK_HEADER_ADD_INCLUDE("sodium.h", "CFLAGS_SODIUM");
 
-        EXTENSION("mysqlnd_parsec", "php_mysqlnd_parsec.c", true)
+    var have_openssl = CHECK_LIB("libcrypto.lib", "crypto", PHP_OPENSSL) &&
+                       CHECK_LIB("libssl.lib", "ssl", PHP_OPENSSL) &&
+                       CHECK_HEADER_ADD_INCLUDE("openssl/ssl.h", "CFLAGS_OPENSSL");
+
+    if (have_sodium && have_openssl) {
+        EXTENSION("mysqlnd_parsec", "php_mysqlnd_parsec.c", true);
         ADD_EXTENSION_DEP('mysqlnd_parsec', 'mysqlnd');
         ADD_EXTENSION_DEP('mysqlnd_parsec', 'sodium');
+        ADD_EXTENSION_DEP('mysqlnd_parsec', 'openssl');
+        ADD_FLAG("LIBS_MYSQLND_PARSEC", "libcrypto.lib libsodium.lib");
+        ADD_FLAG('LDFLAGS_MYSQLND_PARSEC', '/LIBPATH:"..\\deps\\lib"');
+
     } else {
-        WARNING("libsodium not found");
+        if (!have_sodium) {
+            WARNING("libsodium not found; mysqlnd_parsec will not be built");
+        }
+        if (!have_openssl) {
+            WARNING("OpenSSL not found; mysqlnd_parsec will not be built");
+        }
     }
 }
+

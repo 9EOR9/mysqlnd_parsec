@@ -59,9 +59,7 @@ jobs:
           ts: ${{ matrix.ts }}
           extension-url: https://github.com/9EOR9/mysqlnd_parsec
           args: --with-mysqlnd_parsec
-          libs:
-            - openssl-3
-            - libsodium-1
+          libs: "openssl-3, libsodium-1"
 
       # Step 3: Upload the created DLLs as workflow artifacts
       - name: Upload Build Artifact
@@ -71,53 +69,53 @@ jobs:
           path: build/**/php_mysqlnd_parsec.dll
           if-no-files-found: error
 
-# release:
-#   runs-on: ubuntu-latest
-#   # Wait for the build job to complete
-#   needs: build
-#   # Only run this job when the workflow was triggered by a published release
-#   if: ${{ github.event_name == 'release' }}
+  release:
+    runs-on: ubuntu-latest
+    # Wait for the build job to complete
+    needs: build
+    # Only run this job when the workflow was triggered by a published release
+    if: ${{ github.event_name == 'release' }}
 
-#   permissions:
-#     contents: write
+    permissions:
+      contents: write
 
-#   steps:
-#     - name: Download all built artifacts
-#       uses: actions/download-artifact@v4
-#       with:
-#         pattern: mysqlnd_parsec-*
-#         path: artifacts
+    steps:
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mysqlnd_parsec-*
+          path: artifacts
 
-#     # Step 4: Consolidate and Rename DLLs
-#     - name: Consolidate and Rename DLLs
-#       shell: bash
-#       run: |
-#         mkdir release_assets
-#         # Loop through every downloaded artifact directory (e.g., artifacts/mysqlnd_parsec-1.0.0-8.4-nts-x64)
-#         for artifact_dir in artifacts/*; do
-#           # Extract the full version/matrix info from the directory name
-#           MATRIX_INFO=$(basename "$artifact_dir")
+      # Step 4: Consolidate and Rename DLLs
+      - name: Consolidate and Rename DLLs
+        shell: bash
+        run: |
+          mkdir release_assets
+          # Loop through every downloaded artifact directory (e.g., artifacts/mysqlnd_parsec-1.0.0-8.4-nts-x64)
+          for artifact_dir in artifacts/*; do
+            # Extract the full version/matrix info from the directory name
+            MATRIX_INFO=$(basename "$artifact_dir")
 
-#           # Find the single DLL file inside the artifact directory (which might be in a subdir)
-#           DLL_FILE=$(find "$artifact_dir" -name "*.dll" | head -n 1)
+            # Find the single DLL file inside the artifact directory (which might be in a subdir)
+            DLL_FILE=$(find "$artifact_dir" -name "*.dll" | head -n 1)
 
-#           if [ -n "$DLL_FILE" ]; then
-#               # Construct the final desired filename: php_mysqlnd_parsec-VERSION-PHP_MATRIX.dll
-#               NEW_NAME="php_mysqlnd_parsec-$MATRIX_INFO.dll"
+            if [ -n "$DLL_FILE" ]; then
+                # Construct the final desired filename: php_mysqlnd_parsec-VERSION-PHP_MATRIX.dll
+                NEW_NAME="php_mysqlnd_parsec-$MATRIX_INFO.dll"
 
-#               echo "Renaming $DLL_FILE to $NEW_NAME"
-#               cp "$DLL_FILE" "release_assets/$NEW_NAME"
-#           else
-#               echo "Warning: No DLL found in $artifact_dir. Skipping."
-#           fi
-#         done
+                echo "Renaming $DLL_FILE to $NEW_NAME"
+                cp "$DLL_FILE" "release_assets/$NEW_NAME"
+            else
+                echo "Warning: No DLL found in $artifact_dir. Skipping."
+            fi
+          done
 
-#     # Step 5: Upload all consolidated and correctly named DLLs to the GitHub Release
-#     - name: Upload Release Assets
-#       uses: softprops/action-gh-release@v1
-#       with:
-#         files: release_assets/*
-#         tag_name: ${{ github.event.release.tag_name }}
-#         token: ${{ secrets.GITHUB_TOKEN }}
-#         overwrite: true
+      # Step 5: Upload all consolidated and correctly named DLLs to the GitHub Release
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release_assets/*
+          tag_name: ${{ github.event.release.tag_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          overwrite: true
 

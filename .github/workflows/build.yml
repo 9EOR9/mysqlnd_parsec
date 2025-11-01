@@ -79,34 +79,39 @@ jobs:
       - name: Download all built artifacts
         uses: actions/download-artifact@v4
         with:
-          # Downloads all versioned artifacts into subdirectories
+          # Downloads all 12 uniquely named artifacts into the ./artifacts directory
           pattern: mysqlnd_parsec-*
           path: ./artifacts
 
-      # Rename the DLLs and consolidate them into the root directory for the release action
-      - name: Rename and Consolidate DLLs
+      # Consolidate and rename the DLLs into a single directory for mass upload
+      - name: Consolidate and Rename DLLs
         shell: bash
         run: |
-          # Loop through all downloaded artifact directories
+          # Create a dedicated directory for the final release assets
+          mkdir -p release_assets
+          
+          # Find all downloaded DLLs (now located deep inside subdirectories)
+          # The path includes the version and matrix info in the directory name:
+          # ./artifacts/mysqlnd_parsec-1.0.0-8.4-nts-x64/build/.../php_mysqlnd_parsec.dll
           find ./artifacts -type f -name 'php_mysqlnd_parsec.dll' | while read FILE_PATH; do
               
-              # Extract the full version/matrix info (e.g., 1.0.0-8.4-nts-x64) from the parent directory name
+              # Extract the version/matrix info (e.g., 1.0.0-8.4-nts-x64) from the directory name
               ARTIFACT_DIR=$(basename $(dirname $(dirname "$FILE_PATH")))
               
               # Construct the new final name (e.g., php_mysqlnd_parsec-1.0.0-8.4-nts-x64.dll)
               NEW_NAME="php_mysqlnd_parsec-$ARTIFACT_DIR.dll"
               
-              # Move and rename the file
-              mv "$FILE_PATH" "$NEW_NAME"
+              # Move and rename the file into the dedicated directory
+              mv "$FILE_PATH" "release_assets/$NEW_NAME"
               
-              echo "Renamed $ARTIFACT_DIR to $NEW_NAME"
+              echo "Renamed and moved $ARTIFACT_DIR to release_assets/$NEW_NAME"
           done
 
-      - name: Upload Release Asset
-        uses: php/php-windows-builder/release@v1
+      - name: Upload Release Assets
+        # Use softprops/action-gh-release as it reliably handles uploading multiple files via glob patterns.
+        uses: softprops/action-gh-release@v1
         with:
-          release: ${{ github.event.release.tag_name }}
+          # The token is automatically available for release events
           token: ${{ secrets.GITHUB_TOKEN }}
-          # The path is now set to find all renamed files in the root directory
-          path: "*.dll"
-
+          # Upload all files from the consolidated directory
+          files: release_assets/*

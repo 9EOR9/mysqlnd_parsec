@@ -100,7 +100,7 @@ jobs:
           # Loop through every downloaded artifact directory (e.g., artifacts/mysqlnd_parsec-1.0.0-8.4-nts-x64)
           for artifact_dir in artifacts/*; do
             # Extract the full version/matrix info from the directory name
-            MATRIX_INFO=$(basename "$artifact_dir")
+            MATRIX_INFO=$(basename "$artifact_dir" | sed 's/^mysqlnd_parsec-//')
             
             # Find the single DLL file inside the artifact directory (which might be in a subdir)
             DLL_FILE=$(find "$artifact_dir" -name "*.dll" | head -n 1)

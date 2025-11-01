@@ -59,8 +59,8 @@ jobs:
           ts: ${{ matrix.ts }}
           extension-url: https://github.com/9EOR9/mysqlnd_parsec
           args: --with-mysqlnd_parsec
-          libs: 
-            - OpenSSL-3
+          libs:
+            - openssl-3
             - libsodium-1
             
       # Step 3: Upload the created DLLs as workflow artifacts
